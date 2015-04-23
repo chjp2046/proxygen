@@ -4,7 +4,8 @@ cc_library(
 		'HTTPServer.cpp',
 	        'HTTPServerAcceptor.cpp',
 	        'RequestHandlerAdaptor.cpp',
-	        'SignalHandler.cpp'
+	        'SignalHandler.cpp',
+            'WebSocket.cpp'
 	],
 	deps = [
 		'//proxygen/lib:proxygenlib'
