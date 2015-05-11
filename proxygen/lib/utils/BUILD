@@ -12,8 +12,6 @@ cc_library(
 		'ParseURL.cpp',
 		'TraceEvent.cpp',
 		'TraceEventType.cpp',
-		'TraceEventType.cpp',
-		'TraceFieldType.cpp',
 		'TraceFieldType.cpp',
 		'Logging.cpp',
 		'CryptUtil.cpp'
