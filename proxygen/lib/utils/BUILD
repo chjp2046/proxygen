@@ -14,7 +14,9 @@ cc_library(
 		'TraceEventType.cpp',
 		'TraceFieldType.cpp',
 		'Logging.cpp',
-		'CryptUtil.cpp'
+		'CryptUtil.cpp',
+        'ZlibStreamCompressor.cpp',
+        'ZlibStreamDecompressor.cpp'
 	],
 	deps = [
 		'//thirdparty/gflags:gflags',

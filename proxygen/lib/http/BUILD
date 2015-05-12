@@ -58,6 +58,7 @@ cc_library(
 		'session/HTTPTransactionEgressSM.cpp',
 		'session/HTTPTransactionIngressSM.cpp',
 		'session/HTTPUpstreamSession.cpp',
+        'session/HTTP2PriorityQueue.cpp',
 		'session/ByteEventTracker.cpp',
 		'session/SimpleController.cpp',
 		'session/TransportFilter.cpp',
