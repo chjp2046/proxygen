@@ -29,8 +29,6 @@ bitset<256>& HTTPHeaders::perHopHeaderCodes() {
 
 void
 HTTPHeaders::initGlobals() {
-  HTTPCommonHeaders::initHeaderNames();
-
   auto& perHopHeaders = perHopHeaderCodes();
   perHopHeaders[HTTP_HEADER_CONNECTION] = true;
   perHopHeaders[HTTP_HEADER_KEEP_ALIVE] = true;
@@ -91,7 +89,8 @@ bool HTTPHeaders::exists(HTTPHeaderCode code) const {
 size_t HTTPHeaders::getNumberOfValues(HTTPHeaderCode code) const {
   size_t count = 0;
   ITERATE_OVER_CODES(code, {
-    ++count;
+      (void)pos;
+      ++count;
   });
   return count;
 }

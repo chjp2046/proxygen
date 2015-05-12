@@ -7,6 +7,7 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
+#include <gflags/gflags.h>
 #include <folly/Memory.h>
 #include <folly/Portability.h>
 #include <folly/io/async/EventBaseManager.h>
@@ -69,6 +70,7 @@ int main(int argc, char* argv[]) {
   options.threads = static_cast<size_t>(FLAGS_threads);
   options.idleTimeout = std::chrono::milliseconds(60000);
   options.shutdownOn = {SIGINT, SIGTERM};
+  options.enableContentCompression = true;
   options.handlerFactories = RequestHandlerChain()
       .addThen<EchoHandlerFactory>()
       .build();

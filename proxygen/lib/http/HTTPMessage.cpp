@@ -40,6 +40,7 @@ std::locale defaultLocale;
 
 namespace proxygen {
 
+const int8_t HTTPMessage::kMaxPriority = 7;
 std::mutex HTTPMessage::mutexDump_;
 
 const pair<uint8_t, uint8_t> HTTPMessage::kHTTPVersion10(1, 0);
@@ -67,7 +68,7 @@ HTTPMessage::HTTPMessage() :
     versionStr_("1.0"),
     fields_(),
     version_(1,0),
-    sslVersion_(0), sslCipher_(nullptr), spdy_(0), pri_(0),
+    sslVersion_(0), sslCipher_(nullptr), protoStr_(nullptr), pri_(0),
     parsedCookies_(false), parsedQueryParams_(false),
     chunked_(false), upgraded_(false), wantsKeepalive_(true),
     trailersAllowed_(false), secure_(false) {
@@ -92,7 +93,7 @@ HTTPMessage::HTTPMessage(const HTTPMessage& message) :
     strippedPerHopHeaders_(message.headers_),
     sslVersion_(message.sslVersion_),
     sslCipher_(message.sslCipher_),
-    spdy_(message.spdy_),
+    protoStr_(message.protoStr_),
     parsedCookies_(message.parsedCookies_),
     parsedQueryParams_(message.parsedQueryParams_),
     chunked_(message.chunked_),
@@ -124,7 +125,7 @@ HTTPMessage& HTTPMessage::operator=(const HTTPMessage& message) {
   strippedPerHopHeaders_ = message.headers_;
   sslVersion_ = message.sslVersion_;
   sslCipher_ = message.sslCipher_;
-  spdy_ = message.spdy_;
+  protoStr_ = message.protoStr_;
   parsedCookies_ = message.parsedCookies_;
   parsedQueryParams_ = message.parsedQueryParams_;
   chunked_ = message.chunked_;

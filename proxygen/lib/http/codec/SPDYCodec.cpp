@@ -247,37 +247,44 @@ void SPDYCodec::initPerHopHeaders() {
 }
 
 const SPDYVersionSettings& SPDYCodec::getVersionSettings(SPDYVersion version) {
+  // XXX: We new and leak the static here intentionally so it doesn't get
+  // destroyed during a call to exit() when threads are still processing
+  // requests resulting in spurious shutdown crashes.
+
   // Indexed by SPDYVersion
-  static const SPDYVersionSettings spdyVersions[] = {
+  static const auto spdyVersions = new std::vector<SPDYVersionSettings> {
   // SPDY2
     {spdy::kNameVersionv2, spdy::kNameStatusv2, spdy::kNameMethodv2,
     spdy::kNamePathv2, spdy::kNameSchemev2, "",
      spdy::kSessionProtoNameSPDY2, parseUint16, appendUint16,
     (const unsigned char*)kSPDYv2Dictionary, sizeof(kSPDYv2Dictionary),
     0x8002, kFrameSizeSynReplyv2, kFrameSizeNameValuev2,
-     kFrameSizeGoawayv2, kPriShiftv2, 2, 0, SPDYVersion::SPDY2},
+     kFrameSizeGoawayv2, kPriShiftv2, 2, 0, SPDYVersion::SPDY2,
+     spdy::kVersionStrv2},
   // SPDY3
     {spdy::kNameVersionv3, spdy::kNameStatusv3, spdy::kNameMethodv3,
     spdy::kNamePathv3, spdy::kNameSchemev3, spdy::kNameHostv3,
     spdy::kSessionProtoNameSPDY3, parseUint32, appendUint32,
     (const unsigned char*)kSPDYv3Dictionary, sizeof(kSPDYv3Dictionary),
     0x8003, kFrameSizeSynReplyv3, kFrameSizeNameValuev3,
-     kFrameSizeGoawayv3, kPriShiftv3, 3, 0, SPDYVersion::SPDY3},
+     kFrameSizeGoawayv3, kPriShiftv3, 3, 0, SPDYVersion::SPDY3,
+     spdy::kVersionStrv3},
   // SPDY3.1
     {spdy::kNameVersionv3, spdy::kNameStatusv3, spdy::kNameMethodv3,
     spdy::kNamePathv3, spdy::kNameSchemev3, spdy::kNameHostv3,
     spdy::kSessionProtoNameSPDY3, parseUint32, appendUint32,
     (const unsigned char*)kSPDYv3Dictionary, sizeof(kSPDYv3Dictionary),
     0x8003, kFrameSizeSynReplyv3, kFrameSizeNameValuev3,
-     kFrameSizeGoawayv3, kPriShiftv3, 3, 1, SPDYVersion::SPDY3_1}
+     kFrameSizeGoawayv3, kPriShiftv3, 3, 1, SPDYVersion::SPDY3_1,
+     spdy::kVersionStrv31}
   };
   // SPDY3_1_HPACK is identical to SPDY3 in terms of version settings structure
   if (version == SPDYVersion::SPDY3_1_HPACK) {
     version = SPDYVersion::SPDY3_1;
   }
   auto intVersion = static_cast<unsigned>(version);
-  CHECK(intVersion < (sizeof(spdyVersions) / sizeof(SPDYVersionSettings)));
-  return spdyVersions[intVersion];
+  CHECK(intVersion < spdyVersions->size());
+  return (*spdyVersions)[intVersion];
 }
 
 SPDYCodec::SPDYCodec(TransportDirection direction, SPDYVersion version,
@@ -484,7 +491,6 @@ size_t SPDYCodec::parseIngress(const folly::IOBuf& buf) {
 }
 
 void SPDYCodec::onControlFrame(Cursor& cursor) {
-  uint32_t stream_id = 0;
   switch (type_) {
     case spdy::SYN_STREAM:
     {
@@ -845,8 +851,9 @@ void SPDYCodec::generateSynStream(StreamID stream,
   cursor.writeBE(flagsAndLength(flags, len));
   cursor.writeBE(uint32_t(stream));
   cursor.writeBE(uint32_t(assocStream));
-  cursor.writeBE(uint16_t(
-                   msg.getPriority() << (versionSettings_.priShift + 8)));
+  // halve priority for SPDY/2
+  uint8_t pri = msg.getPriority() >> (3 - versionSettings_.majorVersion);
+  cursor.writeBE(uint16_t(pri << (versionSettings_.priShift + 8)));
 
   // Now that we have a complete SYN_STREAM control frame, append
   // it to the writeBuf.
@@ -963,7 +970,7 @@ size_t SPDYCodec::generateRstStream(IOBufQueue& writeBuf,
   appender.writeBE(flagsAndLength(0, kFrameSizeRstStream));
   appender.writeBE(uint32_t(stream));
   appender.writeBE(rstStatusSupported(statusCode) ?
-                   statusCode : spdy::RST_PROTOCOL_ERROR);
+                   statusCode : (uint32_t)spdy::RST_PROTOCOL_ERROR);
   DCHECK_EQ(writeBuf.chainLength(), expectedLength);
   return frameSize;
 }
@@ -1313,8 +1320,9 @@ void SPDYCodec::onSynCommon(StreamID streamID,
                                              streamID, assocStreamID, headers);
   msg->setIngressHeaderSize(size);
 
-  msg->setSPDY(version_);
-  msg->setPriority(pri);
+  msg->setAdvancedProtocolString(versionSettings_.protocolVersionString);
+  // Normalize priority to 3 bits in HTTPMessage.
+  msg->setPriority(pri << (3 - versionSettings_.majorVersion));
   if (assocStreamID) {
     callback_->onPushMessageBegin(streamID, assocStreamID, msg.get());
   } else {
