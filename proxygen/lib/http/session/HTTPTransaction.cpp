@@ -382,7 +382,7 @@ bool HTTPTransaction::validateIngressStateTransition(
       ", event=" << event << ", streamID=" << id_;
     HTTPException ex(HTTPException::Direction::INGRESS_AND_EGRESS, ss.str());
     ex.setProxygenError(kErrorIngressStateTransition);
-    ex.setCodecStatusCode(ErrorCode::PROTOCOL_ERROR);
+    ex.setCodecStatusCode(ErrorCode::INTERNAL_ERROR);
     // This will invoke sendAbort() and also inform the handler of the
     // error and detach the handler.
     onError(ex);
@@ -457,13 +457,24 @@ void HTTPTransaction::onIngressTimeout() {
   CallbackGuard guard(*this);
   VLOG(4) << "ingress timeout on " << *this;
   pauseIngress();
-  markIngressComplete();
+  bool windowUpdateTimeout = !isEgressComplete() &&
+    useFlowControl_ && sendWindow_.getSize() <= 0;
   if (handler_) {
-    HTTPException ex(HTTPException::Direction::INGRESS,
-      folly::to<std::string>("ingress timeout, streamID=", id_));
-    ex.setProxygenError(kErrorTimeout);
-    handler_->onError(ex);
+    if (windowUpdateTimeout) {
+      HTTPException ex(HTTPException::Direction::INGRESS_AND_EGRESS,
+          folly::to<std::string>("ingress timeout, streamID=", id_));
+      ex.setProxygenError(kErrorWriteTimeout);
+      // This is a protocol error
+      ex.setCodecStatusCode(ErrorCode::PROTOCOL_ERROR);
+      onError(ex);
+    } else {
+      HTTPException ex(HTTPException::Direction::INGRESS,
+          folly::to<std::string>("ingress timeout, streamID=", id_));
+      ex.setProxygenError(kErrorTimeout);
+      onError(ex);
+    }
   } else {
+    markIngressComplete();
     markEgressComplete();
   }
 }
@@ -734,16 +745,18 @@ size_t HTTPTransaction::sendEOMNow() {
 
 size_t HTTPTransaction::sendBodyNow(std::unique_ptr<folly::IOBuf> body,
                                     size_t bodyLen, bool sendEom) {
+  static const std::string noneStr = "None";
   DCHECK(body);
   DCHECK(bodyLen > 0);
   size_t nbytes = 0;
-  VLOG(4) << *this << " Sending " << bodyLen << " bytes of body. eom="
-          << ((sendEom) ? "yes" : "no");
   if (useFlowControl_) {
     CHECK(sendWindow_.reserve(bodyLen));
-    VLOG(4) << *this << " send_window is "
-            << sendWindow_.getSize() << " / " << sendWindow_.getCapacity();
   }
+  VLOG(4) << *this << " Sending " << bodyLen << " bytes of body. eom="
+          << ((sendEom) ? "yes" : "no") << " send_window is "
+          << ( useFlowControl_ ?
+               folly::to<std::string>(sendWindow_.getSize(), " / ",
+                                      sendWindow_.getCapacity()) : noneStr);
   if (sendEom) {
     CHECK(HTTPTransactionEgressSM::transit(
             egressState_, HTTPTransactionEgressSM::Event::eomFlushed));
@@ -797,7 +810,7 @@ HTTPTransaction::sendEOM() {
 
 void HTTPTransaction::sendAbort() {
   sendAbort(isUpstream() ? ErrorCode::CANCEL
-                         : ErrorCode::PROTOCOL_ERROR);
+                         : ErrorCode::INTERNAL_ERROR);
 }
 
 void HTTPTransaction::sendAbort(ErrorCode statusCode) {
@@ -882,7 +895,7 @@ void HTTPTransaction::resumeIngress() {
   // the transaction.
   while (!ingressPaused_ && deferredIngress_ && !deferredIngress_->empty()) {
     HTTPEvent& callback(deferredIngress_->front());
-    VLOG(4) << *this << " Processing deferred ingress callback of type " <<
+    VLOG(5) << *this << " Processing deferred ingress callback of type " <<
       callback.getEvent();
     switch (callback.getEvent()) {
       case HTTPEvent::Type::MESSAGE_BEGIN:
