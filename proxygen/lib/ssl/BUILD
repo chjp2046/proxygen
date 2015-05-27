@@ -8,8 +8,7 @@ cc_library(
 		'//thirdparty/gmock:gmock',
 		'//thirdparty/gtest:gtest',
 		'//thirdparty/gperftools-2.0/src:profiler',
-		'//thrift/lib/cpp:thrift',
-		'//thrift/lib/cpp2:thriftcpp2',
+        '//folly:folly',
 		'#rt',
 		'#cap'
 	],
