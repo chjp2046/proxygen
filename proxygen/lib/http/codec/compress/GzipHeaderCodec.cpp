@@ -314,12 +314,16 @@ unique_ptr<IOBuf> GzipHeaderCodec::encode(vector<Header>& headers) noexcept {
       appendString(dst, *header.value);
       lastCode = header.code;
       lastName = header.name;
-    } else {
+    } else if (header.value->length() > 0) {
       // More complicated case: we do need to combine values.
-      *dst++ = 0;  // SPDY uses a null byte as a separator
+      if (lastValueLen > 0) {
+        // Only nul terminate if previous value was non-empty
+        *dst++ = 0;  // SPDY uses a null byte as a separator
+        lastValueLen++;
+      }
       appendString(dst, *header.value);
       // Go back and rewrite the length field in front of the value
-      lastValueLen += (1 + header.value->length());
+      lastValueLen += header.value->length();
       uint8_t* tmp = lastValueLenPtr;
       versionSettings_.appendSizeFun(tmp, lastValueLen);
     }
@@ -446,6 +450,13 @@ GzipHeaderCodec::decode(Cursor& cursor, uint32_t length) noexcept {
   }
 
   return HeaderDecodeResult{outHeaders_, consumed};
+}
+
+void GzipHeaderCodec::decodeStreaming(
+    Cursor& cursor,
+    uint32_t length,
+    HeaderCodec::StreamingCallback* streamingCb) noexcept {
+  // TODO: to implement, never called
 }
 
 Result<size_t, HeaderDecodeError>

@@ -58,6 +58,17 @@ class HeaderCodec {
     virtual void recordEncode(Type type, HTTPHeaderSize& size) = 0;
     virtual void recordDecode(Type type, HTTPHeaderSize& size) = 0;
     virtual void recordDecodeError(Type type) = 0;
+    virtual void recordDecodeTooLarge(Type type) = 0;
+  };
+
+  class StreamingCallback {
+   public:
+    virtual ~StreamingCallback() {}
+
+    virtual void onHeader(const std::string& name,
+                          const std::string& value) = 0;
+    virtual void onHeadersComplete() = 0;
+    virtual void onDecodeError(HeaderDecodeError decodeError) = 0;
   };
 
   HeaderCodec() {}
@@ -81,6 +92,12 @@ class HeaderCodec {
    */
   virtual Result<HeaderDecodeResult, HeaderDecodeError>
   decode(folly::io::Cursor& cursor, uint32_t length) noexcept = 0;
+
+  /**
+   * Decode headers given a Cursor and an amount of bytes to consume.
+   */
+  virtual void decodeStreaming(folly::io::Cursor& cursor, uint32_t length,
+      StreamingCallback* streamingCb) noexcept = 0;
 
   /**
    * compressed and uncompressed size of the last encode
@@ -126,6 +143,7 @@ class HeaderCodec {
   HTTPHeaderSize decodedSize_;
   uint32_t maxUncompressed_{kMaxUncompressed};
   Stats* stats_{nullptr};
+  HeaderCodec::StreamingCallback* streamingCb_{nullptr};
 };
 
 }

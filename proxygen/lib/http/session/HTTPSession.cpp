@@ -1396,6 +1396,7 @@ bool HTTPSession::getCurrentTransportInfo(TransportInfo* tinfo) {
       transportInfo_.tcpinfo.tcpi_rtt = tinfo->tcpinfo.tcpi_rtt;
       transportInfo_.rtt = std::chrono::microseconds(tinfo->tcpinfo.tcpi_rtt);
     }
+    transportInfo_.rtx = tinfo->rtx;
 #endif
     return true;
   }
@@ -1858,6 +1859,9 @@ HTTPSession::createTransaction(HTTPCodec::StreamID streamID,
   if ((isUpstream() && !txn->isPushed()) ||
       (isDownstream() && txn->isPushed())) {
     outgoingStreams_++;
+    if (outgoingStreams_ > historicalMaxOutgoingStreams_) {
+      historicalMaxOutgoingStreams_ = outgoingStreams_;
+    }
   } else {
     incomingStreams_++;
   }

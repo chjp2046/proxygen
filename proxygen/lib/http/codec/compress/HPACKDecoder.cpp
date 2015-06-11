@@ -20,6 +20,7 @@ using std::list;
 using std::string;
 using std::unique_ptr;
 using std::vector;
+using proxygen::HPACK::DecodeError;
 
 namespace proxygen {
 
@@ -43,13 +44,16 @@ uint32_t HPACKDecoder::decode(Cursor& cursor,
   uint32_t emittedSize = 0;
   HPACKDecodeBuffer dbuf(getHuffmanTree(), cursor, totalBytes);
   while (!hasError() && !dbuf.empty()) {
-    emittedSize += decodeHeader(dbuf, headers);
+    emittedSize += decodeHeader(dbuf, &headers);
     if (emittedSize > maxUncompressed_) {
       LOG(ERROR) << "exceeded uncompressed size limit of "
                  << maxUncompressed_ << " bytes";
-      err_ = Error::HEADERS_TOO_LARGE;
+      err_ = DecodeError::HEADERS_TOO_LARGE;
       return dbuf.consumedBytes();
     }
+  }
+  if (version_ != Version::HPACK05) {
+    return dbuf.consumedBytes();
   }
   emittedSize += emitRefset(headers);
   // the emitted bytes from the refset are bounded by the size of the table,
@@ -57,8 +61,33 @@ uint32_t HPACKDecoder::decode(Cursor& cursor,
   if (emittedSize > maxUncompressed_) {
     LOG(ERROR) << "exceeded uncompressed size limit of "
                << maxUncompressed_ << " bytes";
-    err_ = Error::HEADERS_TOO_LARGE;
+    err_ = DecodeError::HEADERS_TOO_LARGE;
   }
+  return dbuf.consumedBytes();
+}
+
+uint32_t HPACKDecoder::decodeStreaming(
+    Cursor& cursor,
+    uint32_t totalBytes,
+    HeaderCodec::StreamingCallback* streamingCb) {
+
+  uint32_t emittedSize = 0;
+  streamingCb_ = streamingCb;
+  HPACKDecodeBuffer dbuf(getHuffmanTree(), cursor, totalBytes);
+  while (!hasError() && !dbuf.empty()) {
+    emittedSize += decodeHeader(dbuf, nullptr);
+
+    if (emittedSize > maxUncompressed_) {
+      LOG(ERROR) << "exceeded uncompressed size limit of "
+                 << maxUncompressed_ << " bytes";
+      err_ = HPACK::DecodeError::HEADERS_TOO_LARGE;
+      return dbuf.consumedBytes();
+    }
+  }
+
+  // decodeStreaming doesn't work for HPACK Version 05
+  CHECK(version_ != Version::HPACK05);
+
   return dbuf.consumedBytes();
 }
 
@@ -80,13 +109,14 @@ uint32_t HPACKDecoder::emitRefset(headers_t& emitted) {
   emitted.reserve(emitted.size() + refset.size());
   uint32_t emittedSize = 0;
   for (const auto& index : refset) {
-    emittedSize += emit(getDynamicHeader(dynamicToGlobalIndex(index)), emitted);
+    emittedSize += emit(getDynamicHeader(dynamicToGlobalIndex(index)),
+                        &emitted);
   }
   return emittedSize;
 }
 
 uint32_t HPACKDecoder::decodeLiteralHeader(HPACKDecodeBuffer& dbuf,
-                                           headers_t& emitted) {
+                                           headers_t* emitted) {
   uint8_t byte = dbuf.peek();
   bool indexing = !(byte & HPACK::HeaderEncoding::LITERAL_NO_INDEXING);
   HPACKHeader header;
@@ -94,31 +124,32 @@ uint32_t HPACKDecoder::decodeLiteralHeader(HPACKDecodeBuffer& dbuf,
   const uint8_t indexMask = 0x3F;  // 0011 1111
   if (byte & indexMask) {
     uint32_t index;
-    if (!dbuf.decodeInteger(6, index)) {
-      LOG(ERROR) << "buffer overflow decoding index";
-      err_ = Error::BUFFER_OVERFLOW;
+    err_ = dbuf.decodeInteger(6, index);
+    if (err_ != DecodeError::NONE) {
+      LOG(ERROR) << "Decode error decoding literal index err_=" << err_;
       return 0;
     }
     // validate the index
     if (!isValid(index)) {
       LOG(ERROR) << "received invalid index: " << index;
-      err_ = Error::INVALID_INDEX;
+      err_ = DecodeError::INVALID_INDEX;
       return 0;
     }
     header.name = getHeader(index).name;
   } else {
     // skip current byte
     dbuf.next();
-    if (!dbuf.decodeLiteral(header.name)) {
-      LOG(ERROR) << "buffer overflow decoding header name";
-      err_ = Error::BUFFER_OVERFLOW;
+    err_ = dbuf.decodeLiteral(header.name);
+    if (err_ != DecodeError::NONE) {
+      LOG(ERROR) << "Error decoding header name err_=" << err_;
       return 0;
     }
   }
   // value
-  if (!dbuf.decodeLiteral(header.value)) {
-    LOG(ERROR) << "buffer overflow decoding header value";
-    err_ = Error::BUFFER_OVERFLOW;
+  err_ = dbuf.decodeLiteral(header.value);
+  if (err_ != DecodeError::NONE) {
+    LOG(ERROR) << "Error decoding header value name=" << header.name
+               << " err_=" << err_;
     return 0;
   }
 
@@ -132,11 +163,11 @@ uint32_t HPACKDecoder::decodeLiteralHeader(HPACKDecodeBuffer& dbuf,
 }
 
 uint32_t HPACKDecoder::decodeIndexedHeader(HPACKDecodeBuffer& dbuf,
-                                           headers_t& emitted) {
+                                           headers_t* emitted) {
   uint32_t index;
-  if (!dbuf.decodeInteger(7, index)) {
-    LOG(ERROR) << "buffer overflow decoding index";
-    err_ = Error::BUFFER_OVERFLOW;
+  err_ = dbuf.decodeInteger(7, index);
+  if (err_ != DecodeError::NONE) {
+    LOG(ERROR) << "Decode error decoding header index err_=" << err_;
     return 0;
   }
   if (index == 0) {
@@ -146,7 +177,7 @@ uint32_t HPACKDecoder::decodeIndexedHeader(HPACKDecodeBuffer& dbuf,
   // validate the index
   if (!isValid(index)) {
     LOG(ERROR) << "received invalid index: " << index;
-    err_ = Error::INVALID_INDEX;
+    err_ = DecodeError::INVALID_INDEX;
     return 0;
   }
   uint32_t emittedSize = 0;
@@ -176,19 +207,21 @@ bool HPACKDecoder::isValid(uint32_t index) {
 }
 
 uint32_t HPACKDecoder::decodeHeader(HPACKDecodeBuffer& dbuf,
-                                    headers_t& emitted) {
+                                    headers_t* emitted) {
   uint8_t byte = dbuf.peek();
   if (byte & HPACK::HeaderEncoding::INDEXED) {
     return decodeIndexedHeader(dbuf, emitted);
-  } else  {
-    // LITERAL_NO_INDEXING or LITERAL_INCR_INDEXING
-    return decodeLiteralHeader(dbuf, emitted);
   }
+  // LITERAL_NO_INDEXING or LITERAL_INCR_INDEXING
+  return decodeLiteralHeader(dbuf, emitted);
 }
 
-uint32_t HPACKDecoder::emit(const HPACKHeader& header,
-                        headers_t& emitted) {
-  emitted.push_back(header);
+uint32_t HPACKDecoder::emit(const HPACKHeader& header, headers_t* emitted) {
+  if (streamingCb_) {
+    streamingCb_->onHeader(header.name, header.value);
+  } else if (emitted) {
+    emitted->push_back(header);
+  }
   return header.bytes();
 }
 
