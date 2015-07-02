@@ -6,6 +6,7 @@ cc_library(
 	srcs = [
 		'http_parser_cpp.cpp',
 		'AsyncTimeoutSet.cpp',
+        'ChromeUtils.cpp',
 		'Exception.cpp',
 		'HTTPTime.cpp',
 		'TraceEventContext.cpp',
