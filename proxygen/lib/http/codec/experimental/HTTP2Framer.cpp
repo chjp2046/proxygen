@@ -235,7 +235,8 @@ parseFrameHeader(Cursor& cursor,
 ErrorCode
 parseData(Cursor& cursor,
           FrameHeader header,
-          std::unique_ptr<IOBuf>& outBuf) noexcept {
+          std::unique_ptr<IOBuf>& outBuf,
+          uint16_t& outPadding) noexcept {
   DCHECK_LE(header.length, cursor.totalLength());
   if (header.stream == 0) {
     return ErrorCode::PROTOCOL_ERROR;
@@ -247,6 +248,9 @@ parseData(Cursor& cursor,
   if (header.length < padding) {
     return ErrorCode::PROTOCOL_ERROR;
   }
+  // outPadding is the total number of flow-controlled pad bytes, which
+  // includes the length byte, if present.
+  outPadding = padding + ((header.flags & PADDED) ? 1 : 0);
   cursor.clone(outBuf, header.length - padding);
   return skipPadding(cursor, padding, kStrictPadding);
 }
@@ -254,7 +258,7 @@ parseData(Cursor& cursor,
 ErrorCode
 parseHeaders(Cursor& cursor,
              FrameHeader header,
-             PriorityUpdate& outPriority,
+             boost::optional<PriorityUpdate>& outPriority,
              std::unique_ptr<IOBuf>& outBuf) noexcept {
   DCHECK_LE(header.length, cursor.totalLength());
   if (header.stream == 0 || !(header.stream & 0x1)) {
@@ -270,6 +274,8 @@ parseHeaders(Cursor& cursor,
     }
     outPriority = parsePriorityCommon(cursor);
     header.length -= kFramePrioritySize;
+  } else {
+    outPriority = boost::none;
   }
   if (header.length < padding) {
     return ErrorCode::PROTOCOL_ERROR;
@@ -505,7 +511,6 @@ writeHeaders(IOBufQueue& queue,
              bool endStream,
              bool endHeaders) noexcept {
   DCHECK_NE(0, stream);
-  DCHECK_NE(0, 0x1 & stream);
   const auto dataLen = (headers) ? headers->computeChainDataLength() : 0;
   uint32_t flags = 0;
   if (priority) {

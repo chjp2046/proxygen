@@ -4,6 +4,22 @@
 ## install proxygen to use in another C++ project on this machine, run
 ## the sibling file `reinstall.sh`.
 
+FOLLY_VERSION='v0.48.0'
+
+# Parse args
+JOBS=8
+USAGE="./deps.sh [-j num_jobs]"
+while [ "$1" != "" ]; do
+  case $1 in
+    -j | --jobs ) shift
+                  JOBS=$1
+                  ;;
+    * )           echo $USAGE
+                  exit 1
+esac
+shift
+done
+
 set -e
 start_dir=`pwd`
 trap "cd $start_dir" EXIT
@@ -79,12 +95,12 @@ if [ ! -e folly/folly ]; then
 fi
 cd folly/folly
 git fetch
-git checkout v0.42.0
+git checkout $FOLLY_VERSION
 
 # Build folly
 autoreconf --install
 ./configure
-make -j8
+make -j$JOBS
 
 if test $? -ne 0; then
 	echo "fatal: folly build failed"
@@ -95,7 +111,7 @@ fi
 cd ../..
 autoreconf -ivf
 CPPFLAGS=" -I`pwd`/folly/" LDFLAGS="-L`pwd`/folly/folly/.libs/" ./configure
-make -j8
+make -j$JOBS
 
 # Run tests
 make check

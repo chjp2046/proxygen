@@ -104,6 +104,7 @@ class MockCodecDownstreamTest: public testing::Test {
     EXPECT_CALL(*codec_, generateRstStream(_, _, _))
       .WillRepeatedly(Return(1));
 
+    HTTPSession::setDefaultReadBufferLimit(65536);
     httpSession_ = new HTTPDownstreamSession(
       transactionTimeouts_.get(),
       std::move(AsyncTransportWrapper::UniquePtr(transport_)),
@@ -253,7 +254,8 @@ TEST_F(MockCodecDownstreamTest, server_push) {
           pushHandler.txn_ = txn; }));
 
   EXPECT_CALL(*codec_, generateHeader(_, 2, _, _, _, _));
-  EXPECT_CALL(*codec_, generateBody(_, 2, PtrBufHasLen(uint64_t(100)), true));
+  EXPECT_CALL(*codec_, generateBody(_, 2, PtrBufHasLen(uint64_t(100)),
+                                    _, true));
   EXPECT_CALL(pushHandler, detachTransaction());
 
   EXPECT_CALL(handler, onEOM())
@@ -263,7 +265,8 @@ TEST_F(MockCodecDownstreamTest, server_push) {
         }));
 
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
-  EXPECT_CALL(*codec_, generateBody(_, 1, PtrBufHasLen(uint64_t(100)), true));
+  EXPECT_CALL(*codec_, generateBody(_, 1, PtrBufHasLen(uint64_t(100)),
+                                    _, true));
   EXPECT_CALL(handler, detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req.get());
@@ -561,7 +564,8 @@ TEST_F(MockCodecDownstreamTest, server_push_client_message) {
           eventBase_.loop(); // flush the response to the assoc request
         }));
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
-  EXPECT_CALL(*codec_, generateBody(_, 1, PtrBufHasLen(uint64_t(100)), true));
+  EXPECT_CALL(*codec_, generateBody(_, 1, PtrBufHasLen(uint64_t(100)),
+                                    _, true));
   EXPECT_CALL(handler, detachTransaction());
 
   // Complete the assoc request/response
@@ -656,7 +660,7 @@ TEST_F(MockCodecDownstreamTest, ping) {
   EXPECT_CALL(*codec_, generateHeader(_, _, _, _, _, _));
   // Ping jumps ahead of queued body in the loop callback
   EXPECT_CALL(*codec_, generatePingReply(_, _));
-  EXPECT_CALL(*codec_, generateBody(_, _, _, true));
+  EXPECT_CALL(*codec_, generateBody(_, _, _, _, true));
   EXPECT_CALL(handler1, detachTransaction());
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
@@ -694,9 +698,11 @@ TEST_F(MockCodecDownstreamTest, flow_control_abort) {
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
   EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, spdy::kInitialWindow));
-  codecCallback_->onBody(HTTPCodec::StreamID(1), makeBuf(spdy::kInitialWindow));
+  codecCallback_->onBody(HTTPCodec::StreamID(1),
+                         makeBuf(spdy::kInitialWindow), 0);
   EXPECT_CALL(*codec_, generateWindowUpdate(_, 0, spdy::kInitialWindow));
-  codecCallback_->onBody(HTTPCodec::StreamID(1), makeBuf(spdy::kInitialWindow));
+  codecCallback_->onBody(HTTPCodec::StreamID(1),
+                         makeBuf(spdy::kInitialWindow), 0);
 
   eventBase_.loop();
 
@@ -736,7 +742,7 @@ TEST_F(MockCodecDownstreamTest, buffering) {
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
   for (int i = 0; i < 2; i++) {
-    codecCallback_->onBody(HTTPCodec::StreamID(1), chunk->clone());
+    codecCallback_->onBody(HTTPCodec::StreamID(1), chunk->clone(), 0);
   }
   codecCallback_->onMessageComplete(HTTPCodec::StreamID(1), false);
 
@@ -790,32 +796,34 @@ TEST_F(MockCodecDownstreamTest, spdy_window) {
     EXPECT_CALL(handler1, onEgressPaused())
       .WillOnce(InvokeWithoutArgs([&handler1, this] () {
             eventBase_.runInLoop([this] {
+                // triggers 4k send, 8kb buffered, handler still paused
                 codecCallback_->onWindowUpdate(1, 4000);
               });
-            // triggers 4k send, 8k buffered, resume
+            eventBase_.runAfterDelay([this] {
+                // triggers 6k send, 2kb buffered, handler still paused
+                codecCallback_->onWindowUpdate(1, 6000);
+              }, 10);
+            eventBase_.runAfterDelay([this] {
+                // triggers 2kb send, 0 buffered, 2k window => resume
+                codecCallback_->onWindowUpdate(1, 4000);
+              }, 20);
           }));
     EXPECT_CALL(handler1, onEgressResumed())
       .WillOnce(InvokeWithoutArgs([&handler1, this] () {
             handler1.sendBody(4000);
-            // 12kb buffered -> pause upstream
+            // 2kb send, 2kb buffered => pause upstream
           }));
     EXPECT_CALL(handler1, onEgressPaused())
       .WillOnce(InvokeWithoutArgs([&handler1, this] () {
             eventBase_.runInLoop([this] {
-                codecCallback_->onWindowUpdate(1, 8000);
+                // triggers 2kb send, resume
+                codecCallback_->onWindowUpdate(1, 4000);
               });
-            // triggers 8kb send
           }));
     EXPECT_CALL(handler1, onEgressResumed())
       .WillOnce(InvokeWithoutArgs([&handler1, this] () {
             handler1.txn_->sendEOM();
-            eventBase_.runInLoop([this] {
-                codecCallback_->onWindowUpdate(1, 4000);
-              });
           }));
-
-    // Somewhat bogus pause, the handler is done sending at this point
-    EXPECT_CALL(handler1, onEgressPaused());
 
     EXPECT_CALL(handler1, detachTransaction());
 
@@ -879,7 +887,7 @@ TEST_F(MockCodecDownstreamTest, double_resume) {
 
   codecCallback_->onMessageBegin(HTTPCodec::StreamID(1), req1.get());
   codecCallback_->onHeadersComplete(HTTPCodec::StreamID(1), std::move(req1));
-  codecCallback_->onBody(HTTPCodec::StreamID(1), std::move(buf));
+  codecCallback_->onBody(HTTPCodec::StreamID(1), std::move(buf), 0);
   codecCallback_->onMessageComplete(HTTPCodec::StreamID(1), false);
 
   EXPECT_CALL(mockController_, detachSession(_));
@@ -917,10 +925,11 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
   EXPECT_CALL(handler1, onHeadersComplete(_));
   EXPECT_CALL(*codec_, generateHeader(_, 1, _, _, _, _));
   unsigned bodyLen = 0;
-  EXPECT_CALL(*codec_, generateBody(_, 1, _, false))
+  EXPECT_CALL(*codec_, generateBody(_, 1, _, _, false))
     .WillRepeatedly(Invoke([&] (folly::IOBufQueue& writeBuf,
                                 HTTPCodec::StreamID stream,
                                 std::shared_ptr<folly::IOBuf> chain,
+                                boost::optional<uint8_t> padding,
                                 bool eom) {
                              bodyLen += chain->computeChainDataLength();
                              return 0; // don't want byte events
@@ -971,7 +980,7 @@ void MockCodecDownstreamTest::testConnFlowControlBlocked(bool timeout) {
     // should allow 10 bytes of the txn1 response to be written
     codecCallback_->onWindowUpdate(0, 10);
     EXPECT_CALL(*codec_, generateBody(_, 1, PtrBufHasLen(uint64_t(10)),
-                                      false));
+                                      _, false));
     eventBase_.loop();
 
     // Just tear everything down now.
@@ -1026,7 +1035,7 @@ TEST_F(MockCodecDownstreamTest, unpaused_large_post) {
   // Give kNumChunks chunks, each of the maximum window size. We should generate
   // window update for each chunk
   for (unsigned i = 0; i < kNumChunks; ++i) {
-    codecCallback_->onBody(1, makeBuf(spdy::kInitialWindow));
+    codecCallback_->onBody(1, makeBuf(spdy::kInitialWindow), 0);
   }
   codecCallback_->onMessageComplete(1, false);
 
@@ -1058,11 +1067,12 @@ TEST_F(MockCodecDownstreamTest, ingress_paused_window_update) {
           handler1.txn_->pauseIngress();
         }));
   EXPECT_CALL(*codec_, generateHeader(_, _, _, _, _, _));
-  EXPECT_CALL(*codec_, generateBody(_, _, _, _))
+  EXPECT_CALL(*codec_, generateBody(_, _, _, _, _))
     .WillRepeatedly(
       Invoke([&] (folly::IOBufQueue& writeBuf,
                   HTTPCodec::StreamID stream,
                   std::shared_ptr<folly::IOBuf> chain,
+                  boost::optional<uint8_t> padding,
                   bool eom) {
                auto len = chain->computeChainDataLength();
                written += len;

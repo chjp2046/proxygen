@@ -12,6 +12,7 @@
 #include <proxygen/lib/http/codec/experimental/HTTPRequestVerifier.h>
 #include <proxygen/lib/http/codec/experimental/HTTP2Framer.h>
 #include <proxygen/lib/http/codec/HTTPCodec.h>
+#include <proxygen/lib/http/codec/HTTPParallelCodec.h>
 #include <proxygen/lib/http/codec/HTTPSettings.h>
 #include <proxygen/lib/utils/Result.h>
 
@@ -25,7 +26,7 @@ namespace proxygen {
  * An implementation of the framing layer for HTTP/2. Instances of this
  * class must not be used from multiple threads concurrently.
  */
-class HTTP2Codec: public HTTPCodec, HeaderCodec::StreamingCallback {
+class HTTP2Codec: public HTTPParallelCodec, HeaderCodec::StreamingCallback {
 public:
   void onHeader(const std::string& name,
                 const std::string& value) override;
@@ -39,22 +40,8 @@ public:
   CodecProtocol getProtocol() const override {
     return CodecProtocol::HTTP_2;
   }
-  TransportDirection getTransportDirection() const override {
-    return transportDirection_;
-  }
-  bool supportsStreamFlowControl() const override;
-  bool supportsSessionFlowControl() const override;
-  StreamID createStream() override;
-  void setCallback(Callback* callback) override { callback_ = callback; }
-  bool isBusy() const override;
-  void setParserPaused(bool paused) override {}
+
   size_t onIngress(const folly::IOBuf& buf) override;
-  void onIngressEOF() override {}
-  bool isReusable() const override;
-  bool isWaitingToDrain() const override;
-  bool closeOnEgressComplete() const override { return false; }
-  bool supportsParallelRequests() const override { return true; }
-  bool supportsPushTransactions() const override { return true; }
   size_t generateConnectionPreface(folly::IOBufQueue& writeBuf) override;
   void generateHeader(folly::IOBufQueue& writeBuf,
                       StreamID stream,
@@ -65,6 +52,7 @@ public:
   size_t generateBody(folly::IOBufQueue& writeBuf,
                       StreamID stream,
                       std::unique_ptr<folly::IOBuf> chain,
+                      boost::optional<uint8_t> padding,
                       bool eom) override;
   size_t generateChunkHeader(folly::IOBufQueue& writeBuf,
                              StreamID stream,
@@ -175,16 +163,16 @@ public:
                                       http2::kMaxFramePayloadLengthMin);
   }
 
-  HTTPCodec::Callback* callback_{nullptr};
-  TransportDirection transportDirection_;
-  StreamID nextEgressStreamID_;
   HPACKCodec09 headerCodec_;
 
   // Current frame state
   http2::FrameHeader curHeader_;
   StreamID expectedContinuationStream_{0};
   bool pendingEndStreamHandling_{false};
-  bool needsChromeWorkaround_{false};
+  bool needsChromeWorkaround_{false}; // malformed continuation
+  bool needsChromeWorkaround2_{false}; // rst on 16kb
+  std::set<HTTPCodec::StreamID> expectedChromeResets_;
+
   folly::IOBufQueue curHeaderBlock_{folly::IOBufQueue::cacheChainLength()};
   HTTPSettings ingressSettings_{
     { SettingsId::HEADER_TABLE_SIZE, 4096 },
@@ -193,12 +181,10 @@ public:
   };
   HTTPSettings egressSettings_{
     { SettingsId::HEADER_TABLE_SIZE, 4096 },
-    { SettingsId::ENABLE_PUSH, 1 },
+    { SettingsId::ENABLE_PUSH, 0 },
     { SettingsId::MAX_FRAME_SIZE, 16384 },
-    { SettingsId::MAX_HEADER_LIST_SIZE, 80 * 1024 },
+    { SettingsId::MAX_HEADER_LIST_SIZE, 1 << 17 }, // same as SPDYCodec
   };
-  StreamID lastStreamID_{0};
-  uint32_t ingressGoawayAck_{std::numeric_limits<uint32_t>::max()};
 #ifndef NDEBUG
   uint32_t egressGoawayAck_{std::numeric_limits<uint32_t>::max()};
   uint64_t receivedFrameCount_{0};
@@ -210,12 +196,6 @@ public:
     FRAME_DATA = 3,
   };
   FrameState frameState_:2;
-  enum ClosingState {
-    OPEN = 0,
-    FIRST_GOAWAY_SENT = 1,
-    CLOSED = 2,
-  };
-  ClosingState sessionClosing_:2;
 
   static uint32_t kHeaderSplitSize;
   HeaderDecodeInfo decodeInfo_;

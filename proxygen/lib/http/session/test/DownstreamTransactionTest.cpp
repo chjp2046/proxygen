@@ -61,7 +61,7 @@ class DownstreamTransactionTest : public testing::Test {
     EXPECT_CALL(transport_, sendEOM(txn))
       .WillOnce(InvokeWithoutArgs([=]() {
             CHECK_EQ(sent_, size);
-            txn->onIngressBody(makeBuf(size));
+            txn->onIngressBody(makeBuf(size), 0);
             txn->onIngressEOM();
             return 5;
           }));
@@ -215,21 +215,15 @@ TEST_F(DownstreamTransactionTest, parse_error_cbs) {
   // onBody() is suppressed since ingress is complete after ingress onError()
   // onEOM() is suppressed since ingress is complete after ingress onError()
   EXPECT_CALL(transport_, sendAbort(_, _));
-  EXPECT_CALL(handler_, onError(_))
-    .WillOnce(Invoke([] (const HTTPException& ex) {
-          ASSERT_EQ(ex.getDirection(),
-                    HTTPException::Direction::INGRESS_AND_EGRESS);
-        }));
   EXPECT_CALL(handler_, detachTransaction());
   EXPECT_CALL(transport_, detach(&txn));
 
   txn.setHandler(&handler_);
   txn.onError(err);
-
   // Since the transaction is already closed for ingress, giving it
   // ingress body causes the transaction to be aborted and closed
   // immediately.
-  txn.onIngressBody(makeBuf(10));
+  txn.onIngressBody(makeBuf(10), 0);
 
   eventBase_.loop();
 }
@@ -299,24 +293,24 @@ TEST_F(DownstreamTransactionTest, deferred_egress) {
 
   // when enqueued
   EXPECT_CALL(transport_, notifyEgressBodyBuffered(10));
+  EXPECT_CALL(handler_, onEgressPaused());
   // sendBody
   EXPECT_CALL(transport_, notifyEgressBodyBuffered(20));
 
   txn.setHandler(&handler_);
   txn.onIngressHeadersComplete(makeGetRequest());
 
-  // onWriteReady, send, then dequeue
+  // onWriteReady, send, then dequeue (SPDY window now full)
   EXPECT_CALL(transport_, notifyEgressBodyBuffered(-20));
-  EXPECT_CALL(handler_, onEgressPaused());
 
   EXPECT_EQ(txn.onWriteReady(20), false);
 
   // enqueued after window update
   EXPECT_CALL(transport_, notifyEgressBodyBuffered(20));
-  EXPECT_CALL(handler_, onEgressResumed());
 
   txn.onIngressWindowUpdate(20);
 
+  // Buffer released on error
   EXPECT_CALL(transport_, notifyEgressBodyBuffered(-20));
   EXPECT_CALL(handler_, onError(_));
   EXPECT_CALL(handler_, detachTransaction());

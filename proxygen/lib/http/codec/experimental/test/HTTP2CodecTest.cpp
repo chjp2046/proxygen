@@ -13,6 +13,7 @@
 #include <proxygen/lib/http/HTTPHeaderSize.h>
 #include <proxygen/lib/http/HTTPMessage.h>
 #include <proxygen/lib/http/codec/test/TestUtils.h>
+#include <proxygen/lib/utils/Logging.h>
 
 #include <gtest/gtest.h>
 #include <random>
@@ -54,12 +55,28 @@ class HTTP2CodecTest : public testing::Test {
    * separate checks for tests
    */
   bool parseImpl(HTTP2Codec& codec, std::function<void(IOBuf*)> hackIngress) {
+    dumpToFile(codec.getTransportDirection() == TransportDirection::UPSTREAM);
     auto ingress = output_.move();
     if (hackIngress) {
       hackIngress(ingress.get());
     }
     size_t parsed = codec.onIngress(*ingress);
     return (parsed == ingress->computeChainDataLength());
+  }
+
+  /*
+   * dumpToFile dumps binary frames to files ("/tmp/http2_*.bin"),
+   * allowing debugging individual frames, e.g., used by ti/tools/spdyprint
+   * @note: assign true to dump_ to turn on dumpToFile
+   */
+  void dumpToFile(bool isUpstream=false) {
+    if (!dump_) {
+      return;
+    }
+    auto endpoint = isUpstream ? "client" : "server";
+    auto filename = folly::to<std::string>(
+        "/tmp/http2_", endpoint, "_", testInfo_->name(), ".bin");
+    dumpBinToFile(filename, output_.front());
   }
 
   void testBigHeader(bool continuation);
@@ -70,6 +87,9 @@ class HTTP2CodecTest : public testing::Test {
   HTTP2Codec upstreamCodec_{TransportDirection::UPSTREAM};
   HTTP2Codec downstreamCodec_{TransportDirection::DOWNSTREAM};
   IOBufQueue output_{IOBufQueue::cacheChainLength()};
+  const testing::TestInfo*
+    testInfo_{testing::UnitTest::GetInstance()->current_test_info()};
+  bool dump_{false};
 };
 
 TEST_F(HTTP2CodecTest, BasicHeader) {
@@ -207,6 +227,23 @@ TEST_F(HTTP2CodecTest, BadHeaderValues) {
   EXPECT_EQ(callbacks_.streamErrors, 4);
   EXPECT_EQ(callbacks_.sessionErrors, 0);
 }
+
+TEST_F(HTTP2CodecTest, DuplicateHeaders) {
+  HTTPMessage req = getGetRequest("/guacamole");
+  req.getHeaders().add("user-agent", "coolio");
+  req.setSecure(true);
+  upstreamCodec_.generateHeader(output_, 1, req, 0, true /* eom */);
+  writeFrameHeaderManual(output_, 0, (uint8_t)http2::FrameType::HEADERS,
+                         http2::END_STREAM, 1);
+
+  parse();
+  EXPECT_EQ(callbacks_.messageBegin, 1);
+  EXPECT_EQ(callbacks_.headersComplete, 1);
+  EXPECT_EQ(callbacks_.messageComplete, 1);
+  EXPECT_EQ(callbacks_.streamErrors, 0);
+  EXPECT_EQ(callbacks_.sessionErrors, 1);
+}
+
 
 /**
  * Ingress bytes with an empty header name
@@ -522,7 +559,8 @@ TEST_F(HTTP2CodecTest, JunkAfterConnError) {
 TEST_F(HTTP2CodecTest, BasicData) {
   string data("abcde");
   auto buf = folly::IOBuf::copyBuffer(data.data(), data.length());
-  upstreamCodec_.generateBody(output_, 2, std::move(buf), true);
+  upstreamCodec_.generateBody(output_, 2, std::move(buf),
+                              HTTPCodec::NoPadding, true);
 
   parse();
   EXPECT_EQ(callbacks_.messageBegin, 0);
@@ -540,7 +578,8 @@ TEST_F(HTTP2CodecTest, LongData) {
   HTTPSettings* settings = (HTTPSettings*)upstreamCodec_.getIngressSettings();
   settings->setSetting(SettingsId::MAX_FRAME_SIZE, 16);
   auto buf = makeBuf(100);
-  upstreamCodec_.generateBody(output_, 1, std::move(buf->clone()), true);
+  upstreamCodec_.generateBody(output_, 1, std::move(buf->clone()),
+                              HTTPCodec::NoPadding, true);
 
   parse();
   EXPECT_EQ(callbacks_.messageBegin, 0);
@@ -703,6 +742,24 @@ TEST_F(HTTP2CodecTest, BadSettings) {
   EXPECT_EQ(callbacks_.sessionErrors, 1);
 }
 
+TEST_F(HTTP2CodecTest, BadPushSettings) {
+  auto settings = downstreamCodec_.getEgressSettings();
+  settings->clearSettings();
+  settings->setSetting(SettingsId::ENABLE_PUSH, 0);
+  SetUpUpstreamTest();
+
+  parseUpstream([&] (IOBuf* ingress) {
+      // set ENABLE_PUSH to 1
+      folly::io::RWPrivateCursor c(ingress);
+      c.skip(http2::kFrameHeaderSize + sizeof(uint16_t));
+      c.writeBE<uint32_t>(1);
+    });
+  EXPECT_EQ(callbacks_.settings, 0);
+  EXPECT_EQ(callbacks_.streamErrors, 0);
+  EXPECT_EQ(callbacks_.sessionErrors, 1);
+}
+
+
 TEST_F(HTTP2CodecTest, SettingsTableSize) {
   auto settings = upstreamCodec_.getEgressSettings();
   settings->setSetting(SettingsId::HEADER_TABLE_SIZE, 8192);
@@ -770,6 +827,8 @@ TEST_F(HTTP2CodecTest, BasicPriority) {
 }
 
 TEST_F(HTTP2CodecTest, BasicPushPromise) {
+  auto settings = upstreamCodec_.getEgressSettings();
+  settings->setSetting(SettingsId::ENABLE_PUSH, 1);
   SetUpUpstreamTest();
   HTTPMessage req = getGetRequest();
   req.getHeaders().add("user-agent", "coolio");
@@ -783,12 +842,12 @@ TEST_F(HTTP2CodecTest, BasicPushPromise) {
 }
 
 TEST_F(HTTP2CodecTest, BadPushPromise) {
+  // ENABLE_PUSH is now 0 by default
   SetUpUpstreamTest();
   HTTPMessage req = getGetRequest();
   req.getHeaders().add("user-agent", "coolio");
   downstreamCodec_.generateHeader(output_, 2, req, 1);
 
-  upstreamCodec_.getEgressSettings()->setSetting(SettingsId::ENABLE_PUSH, 0);
   parseUpstream();
   EXPECT_EQ(callbacks_.messageBegin, 0);
   EXPECT_EQ(callbacks_.headersComplete, 0);
@@ -908,6 +967,9 @@ const string agent1("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) "
 const string agent2("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/43.0.2311.11 Safari/537.36");;
+const string agent3("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/45.0.2311.11 Safari/537.36");;
 
 // Chrome < 43 can generate malformed CONTINUATION frames
 TEST_P(ChromeHTTP2Test, ChromeContinuation) {
@@ -970,7 +1032,6 @@ INSTANTIATE_TEST_CASE_P(AgentTest,
                         ::testing::Values(agent1, agent2));
 
 TEST_F(HTTP2CodecTest, Normal1024Continuation) {
-  HPACKCodec09 headerCodec(TransportDirection::UPSTREAM);
   HTTPMessage req = getGetRequest();
   string bigval(8691, '!');
   bigval.append(8691, ' ');
@@ -990,4 +1051,40 @@ TEST_F(HTTP2CodecTest, Normal1024Continuation) {
   upstreamCodec_.generateSettingsAck(output_);
   parse();
   EXPECT_EQ(callbacks_.settingsAcks, 1);
+}
+
+TEST_F(HTTP2CodecTest, Chrome16kb) {
+  HTTPMessage req = getGetRequest();
+  string bigval(8691, '!');
+  bigval.append(8691, ' ');
+  req.getHeaders().add("x-headr", bigval);
+  req.getHeaders().add("user-agent", agent2);
+  upstreamCodec_.generateHeader(output_, 1, req, 0);
+  upstreamCodec_.generateRstStream(output_, 1, ErrorCode::PROTOCOL_ERROR);
+
+  parse();
+  callbacks_.expectMessage(false, -1, "/");
+  const auto& headers = callbacks_.msg->getHeaders();
+  EXPECT_EQ(bigval, headers.getSingleOrEmpty("x-headr"));
+  EXPECT_EQ(callbacks_.messageBegin, 1);
+  EXPECT_EQ(callbacks_.headersComplete, 1);
+  EXPECT_EQ(callbacks_.messageComplete, 0);
+  EXPECT_EQ(callbacks_.streamErrors, 0);
+  EXPECT_EQ(callbacks_.sessionErrors, 0);
+  EXPECT_EQ(callbacks_.aborts, 1);
+  EXPECT_EQ(callbacks_.lastErrorCode, ErrorCode::NO_ERROR);
+
+  upstreamCodec_.generateSettingsAck(output_);
+  parse();
+  EXPECT_EQ(callbacks_.settingsAcks, 1);
+}
+
+TEST_F(HTTP2CodecTest, StreamIdOverflow) {
+  HTTP2Codec codec(TransportDirection::UPSTREAM);
+
+  HTTPCodec::StreamID streamId;
+  while( codec.isReusable() ) {
+    streamId = codec.createStream();
+  }
+  EXPECT_EQ(streamId, pow(2,31)-3);
 }

@@ -69,7 +69,8 @@ class HTTPSession:
     virtual void onIngressLimitExceeded(const HTTPSession&) = 0;
     virtual void onIngressPaused(const HTTPSession&) = 0;
     virtual void onTransactionDetached(const HTTPSession&) = 0;
-    virtual void onPingReply(int64_t latency) = 0;
+    virtual void onPingReplySent(int64_t latency) = 0;
+    virtual void onPingReplyReceived() = 0;
     virtual void onSettingsOutgoingStreamsFull(const HTTPSession&) = 0;
     virtual void onSettingsOutgoingStreamsNotFull(const HTTPSession&) = 0;
   };
@@ -473,6 +474,8 @@ class HTTPSession:
   // AsyncTransportWrapper::ReadCallback methods
   void getReadBuffer(void** buf, size_t* bufSize) override;
   void readDataAvailable(size_t readSize) noexcept override;
+  bool isBufferMovable() noexcept override;
+  void readBufferAvailable(std::unique_ptr<folly::IOBuf>) noexcept override;
   void processReadData();
   void readEOF() noexcept override;
   void readErr(
@@ -486,7 +489,7 @@ class HTTPSession:
   void onHeadersComplete(HTTPCodec::StreamID streamID,
                          std::unique_ptr<HTTPMessage> msg) override;
   void onBody(HTTPCodec::StreamID streamID,
-      std::unique_ptr<folly::IOBuf> chain) override;
+              std::unique_ptr<folly::IOBuf> chain, uint16_t padding) override;
   void onChunkHeader(HTTPCodec::StreamID stream, size_t length) override;
   void onChunkComplete(HTTPCodec::StreamID stream) override;
   void onTrailersComplete(HTTPCodec::StreamID streamID,

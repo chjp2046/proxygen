@@ -21,9 +21,20 @@ NetworkChange, "network_change"
 MultiConnector, "multi_connector"
 SingleConnector, "single_connector"
 SessionTransactions, "SessionTransactions"
+TCPInfo, "TCPInfo"
 
 /*
  * XXX: Too bad we have to define events in Liger core for the platform
  *      wrappers :(
  */
 FBLigerProtocol, "FBLigerProtocol"
+
+/*
+ * MQTT Client
+ */
+MQTTClient, "MQTTClient"
+
+/*
+ * MQTT Message
+ */
+MQTTMessage, "MQTTMessage"

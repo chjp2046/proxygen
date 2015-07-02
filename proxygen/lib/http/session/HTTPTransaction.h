@@ -479,7 +479,7 @@ class HTTPTransaction :
    * Invoked by the session when some or all of the ingress entity-body has
    * been parsed.
    */
-  void onIngressBody(std::unique_ptr<folly::IOBuf> chain);
+  void onIngressBody(std::unique_ptr<folly::IOBuf> chain, uint16_t padding);
 
   /**
    * Invoked by the session when a chunk header has been parsed.
@@ -991,12 +991,6 @@ class HTTPTransaction :
    * Implementation of sending an abort for this transaction.
    */
   void sendAbort(ErrorCode statusCode);
-
-  /**
-   * Used when HTTPTransaction internally detects an abort worthy condition
-   */
-  void sendAbortInternal(ProxygenError err, ErrorCode statusCode,
-                         const std::string& msg);
 
   // Internal implementations of the ingress-related callbacks
   // that work whether the ingress events are immediate or deferred.

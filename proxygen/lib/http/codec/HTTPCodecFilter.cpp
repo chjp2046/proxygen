@@ -30,8 +30,9 @@ void PassThroughHTTPCodecFilter::onHeadersComplete(
 }
 
 void PassThroughHTTPCodecFilter::onBody(StreamID stream,
-                                        std::unique_ptr<folly::IOBuf> chain) {
-  callback_->onBody(stream, std::move(chain));
+                                        std::unique_ptr<folly::IOBuf> chain,
+                                        uint16_t padding) {
+  callback_->onBody(stream, std::move(chain), padding);
 }
 
 void PassThroughHTTPCodecFilter::onChunkHeader(StreamID stream,
@@ -52,6 +53,14 @@ void PassThroughHTTPCodecFilter::onTrailersComplete(
 void PassThroughHTTPCodecFilter::onMessageComplete(StreamID stream,
                                                    bool upgrade) {
   callback_->onMessageComplete(stream, upgrade);
+}
+
+void PassThroughHTTPCodecFilter::onFrameHeader(
+    uint32_t stream_id,
+    uint8_t flags,
+    uint32_t length,
+    uint16_t version) {
+  callback_->onFrameHeader(stream_id, flags, length, version);
 }
 
 void PassThroughHTTPCodecFilter::onError(
@@ -180,8 +189,10 @@ size_t PassThroughHTTPCodecFilter::generateBody(
     folly::IOBufQueue& writeBuf,
     StreamID stream,
     std::unique_ptr<folly::IOBuf> chain,
+    boost::optional<uint8_t> padding,
     bool eom) {
-  return call_->generateBody(writeBuf, stream, std::move(chain), eom);
+  return call_->generateBody(writeBuf, stream, std::move(chain), padding,
+                             eom);
 }
 
 size_t PassThroughHTTPCodecFilter::generateChunkHeader(

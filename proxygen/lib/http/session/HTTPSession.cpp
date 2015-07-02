@@ -401,8 +401,37 @@ HTTPSession::readDataAvailable(size_t readSize) noexcept {
   processReadData();
 }
 
+bool
+HTTPSession::isBufferMovable() noexcept {
+  return false;
+}
+
+void
+HTTPSession::readBufferAvailable(std::unique_ptr<IOBuf> readBuf) noexcept {
+  CHECK(kOpenSslModeMoveBufferOwnership);
+
+  size_t readSize = readBuf->length();
+  VLOG(5) << "read completed on " << *this << ", bytes=" << readSize;
+
+  DestructorGuard dg(this);
+  resetTimeout();
+  readBuf_.append(std::move(readBuf));
+
+  if (infoCallback_) {
+    infoCallback_->onRead(*this, readSize);
+  }
+
+  processReadData();
+}
+
 void
 HTTPSession::processReadData() {
+  // skip the empty IOBuf before feeding CODEC.
+  while(kOpenSslModeMoveBufferOwnership &&
+        readBuf_.front() != nullptr && readBuf_.front()->length() == 0) {
+    readBuf_.pop_front();
+  }
+
   // Pass the ingress data through the codec to parse it. The codec
   // will invoke various methods of the HTTPSession as callbacks.
   const IOBuf* currentReadBuf;
@@ -651,7 +680,7 @@ HTTPSession::onHeadersComplete(HTTPCodec::StreamID streamID,
 
 void
 HTTPSession::onBody(HTTPCodec::StreamID streamID,
-                    unique_ptr<IOBuf> chain) {
+                    unique_ptr<IOBuf> chain, uint16_t padding) {
   DestructorGuard dg(this);
   // The codec's parser detected part of the ingress message's
   // entity-body.
@@ -666,8 +695,8 @@ HTTPSession::onBody(HTTPCodec::StreamID streamID,
     return;
   }
   auto oldSize = pendingReadSize_;
-  pendingReadSize_ += length;
-  txn->onIngressBody(std::move(chain));
+  pendingReadSize_ += length + padding;
+  txn->onIngressBody(std::move(chain), padding);
   if (oldSize < pendingReadSize_) {
     // Transaction must have buffered something and not called
     // notifyBodyProcessed() on it.
@@ -858,6 +887,7 @@ void HTTPSession::onAbort(HTTPCodec::StreamID streamID,
     folly::to<std::string>("Stream aborted, streamID=",
       streamID, ", code=", getErrorCodeString(code)));
   ex.setProxygenError(kErrorStreamAbort);
+  ex.setCodecStatusCode(code);
   DestructorGuard dg(this);
   if (isDownstream() && txn->getAssocTxnId() == 0 &&
       code == ErrorCode::CANCEL) {
@@ -943,6 +973,9 @@ void HTTPSession::onPingRequest(uint64_t uniqueID) {
 
 void HTTPSession::onPingReply(uint64_t uniqueID) {
   VLOG(4) << *this << " got ping reply with id=" << uniqueID;
+  if (infoCallback_) {
+    infoCallback_->onPingReplyReceived();
+  }
 }
 
 void HTTPSession::onWindowUpdate(HTTPCodec::StreamID streamID,
@@ -1055,10 +1088,11 @@ void HTTPSession::sendHeaders(HTTPTransaction* txn,
   }
   const bool wasReusable = codec_->isReusable();
   const uint64_t oldOffset = sessionByteOffset();
+  // Only PUSH_PROMISE (not push response) has an associated stream
   codec_->generateHeader(writeBuf_,
                          txn->getID(),
                          headers,
-                         txn->getAssocTxnId(),
+                         headers.isRequest() ? txn->getAssocTxnId() : 0,
                          false, // eom
                          size);
   const uint64_t newOffset = sessionByteOffset();
@@ -1092,6 +1126,7 @@ HTTPSession::sendBody(HTTPTransaction* txn,
   size_t encodedSize = codec_->generateBody(writeBuf_,
                                             txn->getID(),
                                             std::move(body),
+                                            HTTPCodec::NoPadding,
                                             includeEOM);
   CHECK(inLoopCallback_);
   pendingWriteSizeDelta_ -= bodyLen;
@@ -1850,7 +1885,7 @@ HTTPSession::createTransaction(HTTPCodec::StreamID streamID,
   ++numTxnServed_;
 
   VLOG(5) << *this << " adding streamID=" << txn->getID()
-          << ", liveTransactions was " << liveTransactions_;
+          << ", liveTransactions_ was " << liveTransactions_;
 
   ++liveTransactions_;
   ++transactionSeqNo_;
@@ -2117,7 +2152,7 @@ void HTTPSession::invalidStream(HTTPCodec::StreamID stream, ErrorCode code) {
 
 void HTTPSession::onPingReplyLatency(int64_t latency) noexcept {
   if (infoCallback_ && latency >= 0) {
-    infoCallback_->onPingReply(latency);
+    infoCallback_->onPingReplySent(latency);
   }
 }
 

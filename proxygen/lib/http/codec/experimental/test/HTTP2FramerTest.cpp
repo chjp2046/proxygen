@@ -73,9 +73,11 @@ class HTTP2FramerTest : public testing::Test {
 
       FrameHeader outHeader;
       std::unique_ptr<IOBuf> outBuf;
-      parse(&parseData, outHeader, outBuf);
+      uint16_t padding = 0;
+      parse(&parseData, outHeader, outBuf, padding);
 
       EXPECT_EQ(outBuf->moveToFbString(), body->moveToFbString());
+      EXPECT_EQ(padding, padLen ? (*padLen + 1) : 0);
     }
     queue_.move(); // reset everything
   }
@@ -113,9 +115,11 @@ TEST_F(HTTP2FramerTest, BadStreamData) {
                          0, 0);
   FrameHeader outHeader;
   std::unique_ptr<IOBuf> outBuf;
+  uint16_t padding = 0;
   Cursor cursor(queue_.front());
   EXPECT_EQ(parseFrameHeader(cursor, outHeader), ErrorCode::NO_ERROR);
-  EXPECT_EQ(parseData(cursor, outHeader, outBuf), ErrorCode::PROTOCOL_ERROR);
+  EXPECT_EQ(parseData(cursor, outHeader, outBuf, padding),
+            ErrorCode::PROTOCOL_ERROR);
 }
 
 TEST_F(HTTP2FramerTest, BadStreamSettings) {
@@ -138,9 +142,11 @@ TEST_F(HTTP2FramerTest, BadPad) {
 
   FrameHeader outHeader;
   std::unique_ptr<IOBuf> outBuf;
+  uint16_t padding = 0;
   Cursor cursor(queue_.front());
   EXPECT_EQ(parseFrameHeader(cursor, outHeader), ErrorCode::NO_ERROR);
-  EXPECT_EQ(parseData(cursor, outHeader, outBuf), ErrorCode::PROTOCOL_ERROR);
+  EXPECT_EQ(parseData(cursor, outHeader, outBuf, padding),
+            ErrorCode::PROTOCOL_ERROR);
 }
 
 TEST_F(HTTP2FramerTest, BadStreamId) {
@@ -254,7 +260,7 @@ TEST_F(HTTP2FramerTest, HeadersWithPaddingAndPriority) {
                false, false);
 
   FrameHeader header;
-  PriorityUpdate priority;
+  boost::optional<PriorityUpdate> priority;
   std::unique_ptr<IOBuf> outBuf;
   parse(&parseHeaders, header, priority, outBuf);
 
@@ -263,9 +269,9 @@ TEST_F(HTTP2FramerTest, HeadersWithPaddingAndPriority) {
   ASSERT_TRUE(PRIORITY & header.flags);
   ASSERT_FALSE(END_STREAM & header.flags);
   ASSERT_FALSE(END_HEADERS & header.flags);
-  ASSERT_EQ(0, priority.streamDependency);
-  ASSERT_TRUE(priority.exclusive);
-  ASSERT_EQ(12, priority.weight);
+  ASSERT_EQ(0, priority->streamDependency);
+  ASSERT_TRUE(priority->exclusive);
+  ASSERT_EQ(12, priority->weight);
   EXPECT_EQ(outBuf->moveToFbString(), body->moveToFbString());
 }
 

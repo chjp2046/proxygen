@@ -127,10 +127,10 @@ void HTTPTransaction::processIngressHeadersComplete(
   }
 }
 
-void HTTPTransaction::onIngressBody(unique_ptr<IOBuf> chain) {
+void HTTPTransaction::onIngressBody(unique_ptr<IOBuf> chain,
+                                    uint16_t padding) {
   if (isIngressEOMSeen()) {
-    sendAbortInternal(kErrorProtocol, ErrorCode::STREAM_CLOSED,
-                      "Received body after EOM");
+    sendAbort(ErrorCode::STREAM_CLOSED);
     return;
   }
   auto len = chain->computeChainDataLength();
@@ -146,10 +146,11 @@ void HTTPTransaction::onIngressBody(unique_ptr<IOBuf> chain) {
   }
   if (mustQueueIngress()) {
     // register the bytes in the receive window
-    if (!recvWindow_.reserve(len, useFlowControl_)) {
-      sendAbortInternal(kErrorProtocol, ErrorCode::FLOW_CONTROL_ERROR,
-                       "Flow control error, peer exceeded window");
+    if (!recvWindow_.reserve(len + padding, useFlowControl_)) {
+      sendAbort(ErrorCode::FLOW_CONTROL_ERROR);
     } else {
+      CHECK(recvWindow_.free(padding));
+      recvToAck_ += padding;
       checkCreateDeferredIngress();
       deferredIngress_->emplace(id_, HTTPEvent::Type::BODY,
                                std::move(chain));
@@ -297,8 +298,7 @@ void HTTPTransaction::processIngressUpgrade(UpgradeProtocol protocol) {
 void HTTPTransaction::onIngressEOM() {
   if (isIngressEOMSeen()) {
     // This can happen when HTTPSession calls onIngressEOF()
-    sendAbortInternal(kErrorProtocol, ErrorCode::STREAM_CLOSED,
-                      "Double EOM detected");
+    sendAbort(ErrorCode::STREAM_CLOSED);
     return;
   }
   // TODO: change the codec to not give an EOM callback after a 100 response?
@@ -492,8 +492,7 @@ void HTTPTransaction::onIngressWindowUpdate(const uint32_t amount) {
   if (sendWindow_.free(amount)) {
     notifyTransportPendingEgress();
   } else {
-    sendAbortInternal(kErrorProtocol, ErrorCode::FLOW_CONTROL_ERROR,
-                      "Invalid window update received");
+    sendAbort(ErrorCode::FLOW_CONTROL_ERROR);
   }
 }
 
@@ -505,8 +504,7 @@ void HTTPTransaction::onIngressSetSendWindow(const uint32_t newWindowSize) {
   if (sendWindow_.setCapacity(newWindowSize)) {
     notifyTransportPendingEgress();
   } else {
-    sendAbortInternal(kErrorProtocol, ErrorCode::FLOW_CONTROL_ERROR,
-                      "Illegal window value");
+    sendAbort(ErrorCode::FLOW_CONTROL_ERROR);
   }
 }
 
@@ -818,15 +816,6 @@ void HTTPTransaction::sendAbort() {
                          : ErrorCode::INTERNAL_ERROR);
 }
 
-void HTTPTransaction::sendAbortInternal(ProxygenError err,
-                                        ErrorCode statusCode,
-                                        const std::string& msg) {
-  HTTPException ex(HTTPException::Direction::INGRESS_AND_EGRESS, msg);
-  ex.setProxygenError(err);
-  ex.setCodecStatusCode(statusCode);
-  onError(ex);
-}
-
 void HTTPTransaction::sendAbort(ErrorCode statusCode) {
   CallbackGuard guard(*this);
   markIngressComplete();
@@ -1006,8 +995,11 @@ void HTTPTransaction::notifyTransportPendingEgress() {
 }
 
 void HTTPTransaction::updateHandlerPauseState() {
-  bool handlerShouldBePaused = egressPaused_ ||
-    (useFlowControl_ && sendWindow_.getSize() <= 0) || egressRateLimited_;
+  int64_t availWindow =
+    sendWindow_.getSize() - deferredEgressBody_.chainLength();
+  bool flowControlPaused = useFlowControl_ && availWindow <= 0;
+  bool handlerShouldBePaused = egressPaused_ || flowControlPaused ||
+    egressRateLimited_;
   if (handler_ && handlerShouldBePaused != handlerEgressPaused_) {
     if (handlerShouldBePaused) {
       handlerEgressPaused_ = true;

@@ -43,6 +43,8 @@ nobase_libutils_HEADERS = \
 	TraceEventObserver.h \
 	TraceEventType.h \
 	TraceFieldType.h \
+	RendezvousHash.h \
+	ConsistentHash.h \
 	UtilInl.h \
 	Logging.h \
 	ZlibStreamCompressor.h \
@@ -59,9 +61,8 @@ libutils_la_SOURCES = \
 	ParseURL.cpp \
 	TraceEvent.cpp \
 	TraceEventType.cpp \
-	TraceEventType.cpp \
 	TraceFieldType.cpp \
-	TraceFieldType.cpp \
+	RendezvousHash.cpp \
 	Logging.cpp \
 	CryptUtil.cpp \
 	ZlibStreamCompressor.cpp \
