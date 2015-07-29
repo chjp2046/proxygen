@@ -14,6 +14,7 @@ cc_library(
 		'TraceEvent.cpp',
 		'TraceEventType.cpp',
 		'TraceFieldType.cpp',
+        'RendezvousHash.cpp',
 		'Logging.cpp',
 		'CryptUtil.cpp',
         'ZlibStreamCompressor.cpp',
