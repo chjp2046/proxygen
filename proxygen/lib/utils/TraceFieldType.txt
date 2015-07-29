@@ -27,6 +27,7 @@ RedirectLocation, "redirect_location"
 NumRedirects, "num_redirects"
 RedirectResponseCode, "redirect_response_code"
 NumRetries, "num_retries"
+PriorityChanges, "priority_changes"
 
 /* ---- Used in ResponseBodyRead ---- */
 RspBodySize, "response_body_size"
@@ -65,6 +66,8 @@ NumberResolvers, "number_resolvers"
 ResolversSerialized, "resolvers_serialized"
 RequestFamily, "request_family"
 NumberAnswers, "number_answers"
+NumberRetries, "number_retries"
+ResolvedSuccess, "resolved_success"
 
 /* ---- Used in DNSCache only ---- */
 DNSCacheHit, "dns_cache_hit"
@@ -116,12 +119,6 @@ VerifiedTimeMerge, "verified_time_merge"
 ProxyHost, "proxy_host"
 ProxyPort, "proxy_port"
 
-/* ---- Used in ReadSocket ---- */
-ReadBytes, "read_bytes"
-
-/* ---- Used in WriteSocket ---- */
-WriteBytes, "write_bytes"
-
 /* ---- Used in Scheduling ---- */
 SchedulerType, "scheduler_type"
 InitialPriority, "initial_priority"
@@ -150,9 +147,8 @@ PermittedMaximumTransactions, "permitted_max_txns"
 /* ---- TCP Info --- */
 Cwnd, "cwnd"
 CwndBytes, "cwnd_bytes"
-NonRTORetx, "non_rto_retx"
 TotalRetx, "total_retx"
-PacketLoss, "packet_loss"
+InflightPacketLoss, "inflight_packet_loss"
 RTT, "rtt"
 RTTVar, "rtt_variance"
 
